@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js'
 import dotenv from 'dotenv'
 import { Database } from './types/database'
 import cookieParser from 'cookie-parser'
+import { useViemService } from './services/viem_service'
+import { EncodeFunctionDataReturnType, Hex } from 'viem'
 
 dotenv.config()
 
@@ -80,8 +82,52 @@ app.get('/key', async (req, res) => {
         return
     }
     const privateKey = data[0].private_key
-    console.log('Private key:', privateKey)
     res.status(200).json({ privateKey })
+})
+
+type SignBody = {
+    data: EncodeFunctionDataReturnType
+    to: Hex
+    value: string
+}
+
+app.post('/sign', async (req, res) => {
+    const { data: txData } = req.body as SignBody
+    if (!txData) {
+        res.status(400).send('No data to sign')
+        return
+    }
+    const viemService = useViemService()
+    const { data, error } = await supabase
+        .from('wallets')
+        .select('private_key')
+        .limit(1)
+    if (!data) {
+        console.error('Error fetching data:', error)
+        res.status(500).send('Error fetching data')
+        return
+    }
+    if (data.length === 0) {
+        res.status(404).send('No keys found')
+        return
+    }
+    const privateKey = data[0].private_key as Hex
+    const account = viemService.getAccount(privateKey)
+
+    const value = req.body.value ? BigInt(req.body.value) : undefined
+    const to = req.body.to as Hex
+
+    console.log('Preparing transaction request with data...')
+    const request = await viemService.client.prepareTransactionRequest({
+        data: txData,
+        to,
+        value,
+        account,
+    })
+    console.log('Signing transaction with account:', account.address)
+    const signature = await viemService.client.signTransaction(request)
+    console.log('Transaction signed successfully')
+    res.status(200).json({ signature })
 })
 
 app.listen(port, () => {

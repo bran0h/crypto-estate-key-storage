@@ -1,5 +1,7 @@
 {
     "cSpell.words": [
-        "SUPABASE"
-    ]
+        "SUPABASE",
+        "viem"
+    ],
+    "typescript.tsdk": "node_modules/typescript/lib"
 }
