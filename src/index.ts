@@ -1,12 +1,12 @@
+import dotenv from 'dotenv'
+dotenv.config()
+
 import express from 'express'
 import { createClient } from '@supabase/supabase-js'
-import dotenv from 'dotenv'
 import { Database } from './types/database'
 import cookieParser from 'cookie-parser'
 import { useViemService } from './services/viem_service'
 import { EncodeFunctionDataReturnType, Hex } from 'viem'
-
-dotenv.config()
 
 const supabaseUrl = process.env.SUPABASE_URL
 const supabaseKey = process.env.SUPABASE_KEY
