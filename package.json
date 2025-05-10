@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon",
+    "dev": "tsx src/index.ts",
     "supa:generate": "env-cmd pnpx supabase gen types --lang=typescript --project-id nsnhvunqtpgbtyriqido > ./src/types/database.ts"
   },
   "keywords": [],
@@ -19,7 +19,6 @@
     "env-cmd": "^10.1.0",
     "eslint": "^9.25.1",
     "globals": "^16.0.0",
-    "nodemon": "^2.0.15",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.31.0"
