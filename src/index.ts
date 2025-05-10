@@ -1,135 +1,129 @@
 import dotenv from 'dotenv'
 dotenv.config()
 
-import express from 'express'
 import { createClient } from '@supabase/supabase-js'
-import { Database } from './types/database'
-import cookieParser from 'cookie-parser'
-import { useViemService } from './services/viem_service'
-import { EncodeFunctionDataReturnType, Hex } from 'viem'
+import { Database } from './types/database.js'
+import { useViemService } from './services/viem_service.js'
+import { Hex, parseTransaction } from 'viem'
+import { Client, Variables, TaskService, Task  } from "camunda-external-task-client-js";
+import consola  from 'consola'
+import { error } from 'console'
 
 const supabaseUrl = process.env.SUPABASE_URL
 const supabaseKey = process.env.SUPABASE_KEY
-const supabaseInstance = process.env.SUPABASE_INSTANCE
+
+const logger = consola.create({
+    defaults: {
+      tag: "camunda_market_service",
+    },
+  });
 
 if (!supabaseUrl || !supabaseKey) {
     throw new Error('Supabase URL and Key must be provided in .env file')
 }
+const client = new Client({
+    baseUrl: process.env.CAMUNDA_API_URL || 'http://localhost:8080/engine-rest',
+    asyncResponseTimeout: 10000,
+    maxTasks: 10
+})
+  
 
-// Create a single supabase client for interacting with your database
-const supabase = createClient<Database>(supabaseUrl, supabaseKey)
-
-const TOKEN_COOKIE_0 = `sb-${supabaseInstance}-auth-token.0`
-const TOKEN_COOKIE_1 = `sb-${supabaseInstance}-auth-token.1`
-
-const app = express()
-const port = 3001
-
-app.use(express.json())
-app.use(express.urlencoded({ extended: true }))
-app.use(cookieParser())
-
-/**
- * Check if the request is authenticated
- */
-
-type Session = {
-    access_token: string
-    refresh_token: string
+export const createDirectServiceClient = () => {
+    
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('Missing Supabase environment variables')
+    }
+    return createClient<Database>(supabaseUrl, supabaseKey)
 }
 
-app.use(async (req, res, next) => {
-    const authCookiePart0 = req.cookies[TOKEN_COOKIE_0]
-    const authCookiePart1 = req.cookies[TOKEN_COOKIE_1]
-    const authCookie = authCookiePart0 + authCookiePart1
+client.subscribe("getUserWalletAddress", async function({ task, taskService }: { task: Task, taskService: TaskService }) {
+    try {
+      logger.info("getUserWalletAddress task executing...");
+      
+      const userId: string = task.variables.get("userId");
+      
+      logger.info(`Fetching wallet address for userId: ${userId}`);
 
-    if (typeof authCookie !== 'string' || !authCookie.startsWith('base64-')) {
-        res.status(401).send('Unauthorized')
-        return
+      const supabaseClient = createDirectServiceClient();
+      // Check if wallet already exists
+      const { data: wallet } = await supabaseClient
+        .from("wallets")
+        .select("*")
+        .eq("user_id", userId)
+        .single();
+      if (!wallet) {
+        throw error({
+          statusCode: 404,
+          statusMessage: "Wallet not found",
+        });
+      }
+      const { getAccount } = useViemService();
+      const privateKey = wallet.private_key as Hex;
+      const account = getAccount(privateKey);
+      const userAddress = account.address;
+
+
+
+      const processVariables = new Variables();
+      processVariables.set("walletAddress", userAddress);
+      await taskService.complete(task, processVariables);
+      logger.success("Wallet address fetched successfully:", userAddress);
+    } catch (error) {
+      logger.error("Error in getUserWalletAddress task:", error);
+      if (error instanceof Error) {
+        await taskService.handleBpmnError(
+          task, 
+          "FETCH WALLET ERROR",
+          `Wallet address fetching failed: ${error.message}`
+        );
+      }
     }
+  });
 
-    // If it's a base64 encoded string, decode it
-    const base64Str = authCookie.replace('base64-', '')
-    const jsonStr = Buffer.from(base64Str, 'base64').toString()
-    const session = JSON.parse(jsonStr) as Session
+  client.subscribe("signTransaction", async function({ task, taskService }: { task: Task, taskService: TaskService }) {
+    try {
+      logger.info("signTransaction task executing...");
 
-    const { data, error } = await supabase.auth.setSession(session)
-    if (error) {
-        console.error('Error setting session:', error)
-        res.status(401).send('Unauthorized')
-        return
+
+      const from = task.variables.get("transactionData").from;
+      const userId: string = task.variables.get("userId");
+      const serializedTransaction = task.variables.get("transactionData").serializedTransaction;
+      logger.info(`Signing transaction for address: ${from}`);
+      logger.info("Serialized Transaction data:", serializedTransaction);
+      const transaction = parseTransaction(serializedTransaction);
+      logger.info("Parsed Transaction data:", transaction);
+      const supabaseClient = createDirectServiceClient();
+
+      const { data: wallet } = await supabaseClient
+      .from("wallets")
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+    if (!wallet) {
+      throw error({
+        statusCode: 404,
+        statusMessage: "Wallet not found",
+      });
     }
-    if (!data.session) {
-        console.log('No session found')
-        res.status(401).send('Unauthorized')
-        return
+    const { getAccount } = useViemService();
+    const privateKey = wallet.private_key as Hex;
+    const account = getAccount(privateKey);
+    const signedTransaction = await account.signTransaction(transaction);
+    logger.info("Signed Transaction data:", signedTransaction);
+    const processVariables = new Variables();
+    processVariables.set("signedTransaction", signedTransaction);
+    await taskService.complete(task, processVariables);
+    logger.success("Transaction signing completed successfully:", signedTransaction);
+  
+    } catch (error) {
+      logger.error("Error in signTransaction task:", error);
+      if (error instanceof Error) {
+        await taskService.handleBpmnError(
+          task, 
+          "SIGN TRANSACTION ERROR",
+          `Transaction signing failed: ${error.message}`
+        );
+      }
     }
-    next()
-})
-
-app.get('/key', async (req, res) => {
-    const { data, error } = await supabase
-        .from('wallets')
-        .select('private_key')
-        .limit(1)
-    if (!data) {
-        console.error('Error fetching data:', error)
-        res.status(500).send('Error fetching data')
-        return
-    }
-    if (data.length === 0) {
-        res.status(404).send('No keys found')
-        return
-    }
-    const privateKey = data[0].private_key
-    res.status(200).json({ privateKey })
-})
-
-type SignBody = {
-    data: EncodeFunctionDataReturnType
-    to: Hex
-    value: string
-}
-
-app.post('/sign', async (req, res) => {
-    const { data: txData } = req.body as SignBody
-    if (!txData) {
-        res.status(400).send('No data to sign')
-        return
-    }
-    const viemService = useViemService()
-    const { data, error } = await supabase
-        .from('wallets')
-        .select('private_key')
-        .limit(1)
-    if (!data) {
-        console.error('Error fetching data:', error)
-        res.status(500).send('Error fetching data')
-        return
-    }
-    if (data.length === 0) {
-        res.status(404).send('No keys found')
-        return
-    }
-    const privateKey = data[0].private_key as Hex
-    const account = viemService.getAccount(privateKey)
-
-    const value = req.body.value ? BigInt(req.body.value) : undefined
-    const to = req.body.to as Hex
-
-    console.log('Preparing transaction request with data...')
-    const request = await viemService.client.prepareTransactionRequest({
-        data: txData,
-        to,
-        value,
-        account,
-    })
-    console.log('Signing transaction with account:', account.address)
-    const signature = await viemService.client.signTransaction(request)
-    console.log('Transaction signed successfully')
-    res.status(200).json({ signature })
-})
-
-app.listen(port, () => {
-    console.log(`[Crypto estate - key management] listening on port ${port}`)
-})
+     
+  });
